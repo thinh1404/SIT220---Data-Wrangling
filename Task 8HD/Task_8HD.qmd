@@ -1,0 +1,1103 @@
+---
+title: "Task 8HD : Data Cleansing and Text Analysis Challenge"
+author: "Truong Khang Thinh Nguyen"
+date: today
+format:
+    pdf:
+        toc: true
+        number-sections: false
+        include-in-header:
+            text: |
+                \addtokomafont{disposition}{\rmfamily}
+                \usepackage{fvextra}
+                \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
+        fig-pos: 'H'
+jupyter: python3
+---
+
+### Truong Khang Thinh Nguyen - 223446545
+### Email : s223446545@gmail.com
+### SIT220 - Undergraduate
+
+#### This report endeavors to delve deeper into the History Stack Exchange site, aiming to extract valuable patterns, trends, and insights about its users through the utilization of regular expressions. While traditional exploratory data analysis (EDA) provides an overview of the data, the use of regular expressions enables us to unexplored details and relationships within the text data. For instance, by employing regular expressions, we can extract specific information such as locations mentioned in the posts, allowing us to visualize user activity geographically through mapping. Beyond merely skimming the surface of the data, this approach empowers us to uncover hidden gems of knowledge and gain a more comprehensive understanding of user interactions and interests on the History Stack Exchange platform.
+
+#### Moreover, this report goes beyond basic exploratory analysis by delving into the relationship between sentiment expressed in comments and various factors such as post length, sentiment of the post title and body, and other contextual attributes. By leveraging regular expressions to extract sentiment-related information from the text data, we can discern patterns and correlations that may otherwise remain unnoticed. For example, we may discover that longer posts tend to elicit more diverse sentiments in the comments, or that the sentiment expressed in the post title strongly influences the sentiment of subsequent comments. This deeper analysis not only enriches our understanding of user behavior and engagement on the platform but also provides valuable insights for content creators, moderators, and platform administrators to enhance user experience and foster community engagement.
+
+```{python}
+# Packages for csv and XML files manipulation
+import xml.etree.ElementTree as ET
+import csv
+
+# Data Manipulation packages
+import pandas as pd
+import numpy as np
+import re
+
+# Packages for plotting
+import folium
+from folium.plugins import MarkerCluster
+import seaborn as sns
+import matplotlib.pyplot as plt
+from wordcloud import WordCloud
+
+# Packages for building a regresison model
+from sklearn.preprocessing import StandardScaler
+import statsmodels.api as sm
+from statsmodels.graphics.gofplots import qqplot
+
+# Import neccessary packages to analyse the sentiments and the polarity scores of the text
+from transformers import AutoTokenizer
+from transformers import AutoModelForSequenceClassification
+from scipy.special import softmax
+```
+
+```{python}
+# Create a function to parse the XML file and then create a corresponded csv file
+def xml_to_csv(input_file, output_file):
+    # Parse the XML file
+    tree = ET.parse(input_file)
+    root = tree.getroot()
+
+    # Open the CSV file for writing
+    with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
+        # Create a CSV writer object
+        csvwriter = csv.writer(csvfile)
+        
+        # Extract all column names from the first element (assuming all elements have the same structure)
+        first_element = root[0]
+        column_names = first_element.attrib.keys()
+        csvwriter.writerow(column_names)  # Write the header
+        
+        # Write data rows
+        for element in root:
+            row = [element.attrib.get(col, '') for col in column_names]
+            csvwriter.writerow(row)
+
+# Use the defined function to pass the XML file and the wanted csv file name
+xml_to_csv('Badges.xml', 'Badges.csv')
+xml_to_csv('Comments.xml', 'Comments.csv')
+xml_to_csv('PostHistory.xml', 'PostHistory.csv')
+xml_to_csv('PostLinks.xml', 'PostLinks.csv')
+xml_to_csv('Posts.xml', 'Posts.csv')
+xml_to_csv('Tags.xml', 'Tags.csv')
+xml_to_csv('Users.xml', 'Users.csv')
+xml_to_csv('Votes.xml', 'Votes.csv')
+```
+
+```{python}
+# Load datasets from the created csv files
+Badges = pd.read_csv("Badges.csv")
+Cmt = pd.read_csv("Comments.csv")
+PostHistory = pd.read_csv("PostHistory.csv")
+PostLink = pd.read_csv("PostLinks.csv")
+Post = pd.read_csv("Posts.csv")
+Tags = pd.read_csv("Tags.csv")
+Users = pd.read_csv("Users.csv")
+Vote = pd.read_csv("Votes.csv")
+```
+
+##### To kick off our analysis, we first need to perform an Exploratory Data Analysis (EDA) to get a broad understanding of the dataset's characteristics.
+##### Initially, we should generate copies of each dataset we've just created. This way, any modifications made to the duplicates won't impact the original datasets.
+
+```{python}
+badges_df = Badges
+cmt_df = Cmt
+posthis_df = PostHistory
+post_df = Post
+tag_df = Tags
+user_df = Users
+vote_df = Vote
+```
+
+##### As we are currently in Australia so I'll compile historical events by summarizing the top 10 posts with the highest views from Stack Exchange data.
+
+```{python}
+# Function to remove tags from the text
+def remove_html_tags(text):
+    # Define the regular expression pattern to match HTML tags
+    html_pattern = re.compile(r'<.*?>')
+    
+    # Use re.sub() to replace HTML tags with an empty string
+    clean_text = re.sub(html_pattern, '', text)
+    
+    return clean_text
+```
+
+```{python}
+# Function to extract the capitalized words from titles ==> Get Keywords
+def extract_capitalized_words(title):
+    # Use regex to find capitalized words
+    capitalized_words = re.findall(r'\b[A-Z][a-z]*\b', title)
+    return ' '.join(capitalized_words)
+```
+
+Initially, we'll eliminate rows that don't have any tags.
+
+```{python}
+post_df.dropna(subset = "Tags",inplace = True)
+```
+
+Then filter out rows that just have the "australian"
+
+```{python}
+# Filter rows where the "tags" column contains "Australia"
+aus_df = post_df[post_df["Tags"].str.contains(r"\baustralia\b")]
+print(aus_df.info())
+```
+
+```{python}
+# Let's have a look at our dataframe that just has Aus tag
+print(aus_df)
+```
+
+To effectively identify historical events within each post, we'll analyze both the title and the body. Currently, the bodies of each post are in HTML format, so we'll need to reformat them for better readability.
+
+```{python}
+aus_df["Clean Body"] = aus_df["Body"].apply(remove_html_tags)
+print(aus_df[["Clean Body"]].head())
+```
+
+Next, we'll extract keywords from the titles to identify significant events. Typically, keywords related to major events will be capitalized.
+
+```{python}
+aus_df["Key Words"] = aus_df["Title"].apply(extract_capitalized_words)
+print(aus_df[["Title","Key Words"]].head())
+```
+
+Following that, we'll select the top 10 posts with the highest views which may contain significant events in Australian history.
+
+```{python}
+aus_df.sort_values(by = "ViewCount", ascending = False,inplace = True)
+top10_aus = aus_df.head(10)
+print(top10_aus)
+```
+
+```{python}
+# Print out the rows that contain the title, body, and keyword of that post
+for row_idx, (title, body, keyword) in enumerate(zip(top10_aus["Title"], top10_aus["Clean Body"], top10_aus["Key Words"]), start=1):
+    print(f"ROW {row_idx} :")
+    print(f"Title: {title}")
+    print(body)
+    print(f"****KEYWORD: {keyword}")
+    print("==" * 30)
+    print()
+```
+
+Now that we've identified the major historical events based on the posts with the highest view counts, let's create a map and mark the locations to aid in our interpretation.
+Separation of Australia from the United Kingdom in Westminster.
+
+```{python}
+# Define additional information for Westminster, London popup
+westminster_popup_html = """
+<h4>Westminster - Separation of Australia from the United Kingdom in Westminster</h4>
+
+<section>
+    <h5>Introduction</h5>
+    <p>The separation of Australia from the United Kingdom in Westminster refers to the process through which Australia gained legislative independence from the UK Parliament.</p>
+    <p>This process culminated in the passage of the Statute of Westminster Adoption Act 1942 by the Australian Parliament.</p>
+    <p>The act effectively recognized Australia's legislative autonomy, allowing it to pass laws without requiring approval from the British Parliament.</p>
+</section>
+
+<section>
+    <h5>Background</h5>
+    <p>Before this separation, Australia, along with other British Dominions, operated under the legal framework of British parliamentary sovereignty.</p>
+    <p>However, as Australia grew and developed as a nation, there was increasing sentiment for greater autonomy and self-governance.</p>
+    <p>The Statute of Westminster 1931 laid the groundwork for this process by granting legislative independence to the self-governing Dominions of the British Empire, including Australia.</p>
+    <p>However, Australia initially hesitated to adopt the statute due to concerns about its potential impact on the federation and constitutional arrangements.</p>
+</section>
+
+<section>
+    <h5>Legislative Independence</h5>
+    <p>It wasn't until the outbreak of World War II and the fall of Singapore in 1942 that the Australian government felt the urgency to assert its legislative independence.</p>
+    <p>In response to these events, the Australian Parliament passed the Statute of Westminster Adoption Act 1942, formally adopting the Statute of Westminster and severing legislative ties with the UK Parliament.</p>
+    <p>This act marked a significant milestone in Australia's journey towards full sovereignty and independence.</p>
+    <p>It represented a symbolic and practical step towards asserting Australia's status as a fully independent nation within the Commonwealth.</p>
+</section>
+"""
+
+```
+
+Torres Strait Islands - interactions between the Aboriginal peoples of Australia and the Māori of New Zealand.
+```{python}
+torrens_strait_popup_html = """
+<h4>Torres Strait Islands</h4>
+<section>
+    <h5>Introduction</h5>
+    <p>The Torres Strait Islands are a group of at least 274 small islands in the Torres Strait waterway between Australia and Papua New Guinea.</p>
+    <p>The islands are home to the Indigenous Torres Strait Islander people and have a rich cultural heritage.</p>
+</section>
+
+<section>
+    <h5>Interactions with Aboriginal Australians and the Māori</h5>
+    <p>While there isn't extensive direct evidence of regular contact between Aboriginal Australians and the Māori prior to European arrival, it's theorized that some limited interaction may have occurred through the Torres Strait Islands. Both Aboriginal Australians and the Māori are thought to have had maritime capabilities, with the Māori famously known for their impressive voyaging canoes.</p>
+    <p>The Torres Strait Islands were inhabited by Indigenous Torres Strait Islander peoples who had established trade networks and cultural connections with neighboring regions, including Papua New Guinea and other parts of the Pacific. It's possible that these islanders served as intermediaries or facilitators of contact between the Aboriginal peoples of Australia and the Māori of New Zealand.</p>
+    <p>However, the exact nature and extent of these interactions remain subjects of ongoing research and debate among historians, anthropologists, and archaeologists. While evidence suggests some level of contact and exchange, further studies are needed to fully understand the dynamics of pre-European contact between these Indigenous groups through the Torres Strait Islands.</p>
+</section>
+"""
+```
+
+Canberra, the capital of Australia, is where decisions are made by the Prime Minister.
+```{python}
+# Define the popup HTML content for Canberra
+canberra_popup_html = """
+<h4>Canberra, Australia</h4>
+<section>
+    <h5>Constitutional Monarchy</h5>
+    <p>Australia operates as a constitutional monarchy with a parliamentary system of government. The Queen of England is the head of state, but her powers are largely ceremonial and symbolic.</p>
+</section>
+<section>
+    <h5>Appointment of Prime Minister</h5>
+    <p>The Prime Minister of Australia is appointed by the Governor-General, who is the Queen's representative in Australia. However, this appointment is based on the political realities of the Australian Parliament, specifically the party or coalition of parties that commands the majority in the House of Representatives.</p>
+</section>
+<section>
+    <h5>Removal of Prime Minister</h5>
+    <p>In practice, the Prime Minister serves at the pleasure of the Australian Parliament and can be removed through political processes such as a vote of no confidence or a leadership spill within the Prime Minister's party.</p>
+</section>
+"""
+```
+
+Guadalcanal holds importance for Australia due to its role as a significant battleground during World War II, where both Allied and Japanese forces were engaged in a major campaign.
+```{python}
+japan_popup_html = """
+<h4>Guadalcanal</h4>
+<section>
+    <h5>Background</h5>
+    <p>Guadalcanal, located in the Solomon Islands, holds historical significance for Australia as it was the site of a major campaign during World War II involving Allied and Japanese forces.</p>
+</section>
+<section>
+    <h5>Battle</h5>
+    <p>The battle for Guadalcanal, which raged from August 1942 to February 1943, saw heavy casualties for both sides. The Japanese suffered significant losses while attempting to defend the island against Allied invasion.</p>
+</section>
+<section>
+    <h5>Significance</h5>
+    <p>The campaign for Guadalcanal marked a pivotal moment in the Pacific theater of World War II. It represented the first major offensive launched by Allied forces against Japanese-held territory.</p>
+    <p>The eventual Allied victory at Guadalcanal provided Australia with a strategic foothold in the Solomon Islands, strengthening its position in the region and contributing to the overall Allied effort against Japanese expansion in the Pacific.</p>
+</section>
+"""
+```
+
+Uluru, also known as Ayers Rock, which is a culturally significant landmark in central Australia and holds significance to the Aboriginal people. This location serves as a symbolic representation of Aboriginal culture and heritage.
+```{python}
+uluru_popup_html = """
+<h4>Uluru - Factors Influencing the Absence of Agriculture Among Aboriginal Australians</h4>
+<section>
+    <h5>Background</h5>
+    <p>Despite their lengthy history of approximately 50,000 years on the continent, Aboriginal Australians did not develop agriculture to the extent seen in other parts of the world.</p>
+    <p>While some argue that the temperate and subtropical climates of Australia could have supported agricultural practices, the development of advanced technology and agricultural systems among Aboriginal civilizations remained limited compared to counterparts in the Old World.</p>
+</section>
+<section>
+    <h5>Factors</h5>
+    <p>Factors such as isolation, limited resources, and cultural practices may have hindered the development and adoption of agricultural techniques among Aboriginal Australians.</p>
+    <p>While geographical factors may have played a role, other challenges likely contributed to the absence of agricultural practices.</p>
+</section>
+<section>
+    <h5>Conclusion</h5>
+    <p>The absence of agriculture among Aboriginal Australians likely resulted from a combination of geographical, cultural, and historical factors that influenced their societies' development and technological advancements.</p>
+</section>
+"""
+```
+
+Absence of Austronesian/Polynesian Colonization.
+```{python}
+polynesian_popup_html = """
+<h4>Torres Strait Islands - Factors Influencing the Absence of Austronesian/Polynesian Colonization of Australia</h4>
+<section>
+    <p>Despite the presence of Aboriginal populations in Australia since prehistory, neighboring regions such as Indonesia, Polynesia, and New Guinea were home to technologically advanced civilizations. However, the Austronesian and Polynesian peoples did not colonize Australia, raising questions about the reasons behind this absence of colonization and whether there is evidence of interaction or invasion.</p>
+</section>
+<section>
+    <h5> Geographic Barriers</h5>
+    <p>The vast expanses of open sea, such as the Torres Strait, separating Australia from neighboring regions could have posed significant challenges to maritime navigation and exploration.</p>
+</section>
+<section>
+    <h5> Cultural Priorities</h5>
+    <p>Austronesian and Polynesian societies may have had different cultural priorities or objectives that did not include expansion into Australia. These societies might have focused on other areas for settlement, resource exploitation, or cultural development.</p>
+</section>
+<section>
+    <h5> Adaptation to Local Environments</h5>
+    <p>The ecosystems and environments of Australia differ significantly from those of neighboring regions. Austronesian and Polynesian peoples may have been better adapted to the maritime and island environments of their homelands, making the Australian continent less attractive for colonization.</p>
+</section>
+<section>
+    <h5> Resource Availability</h5>
+    <p>Australia's arid and harsh interior may have presented challenges in terms of resource availability for potential colonizers. The lack of reliable freshwater sources and fertile land suitable for agriculture could have deterred Austronesian and Polynesian peoples from establishing permanent settlements in Australia.</p>
+</section>
+<section>
+    <h5> Limited Evidence of Interaction</h5>
+    <p>While there is some evidence of contact and interaction between Aboriginal Australians and Austronesian/Polynesian peoples, such as the presence of traded goods and linguistic connections, there is limited evidence of large-scale colonization or invasion.</p>
+</section>
+<p>Overall, the absence of Austronesian/Polynesian colonization of Australia likely resulted from a combination of geographical, cultural, and environmental factors that influenced the priorities and capabilities of these societies.</p>
+"""
+```
+
+Sydney - Ancient Chinese Exploration of Australia.
+```{python}
+sydney_popup_html = """
+<h4>Sydney - Evidence of Ancient Chinese Exploration of Australia</h4>
+
+<section>
+    <h5>Introduction</h5>
+    <p>Exploring the possibility of ancient Chinese exploration of Australia before extensive contact with Europeans during the Middle Ages raises intriguing questions about maritime history and cross-cultural interactions.</p>
+</section>
+
+<section>
+    <h5>Background</h5>
+    <p>While concrete evidence of direct Chinese exploration remains elusive, several theories and pieces of evidence suggest the potential for early Chinese contact with the Australian continent.</p>
+</section>
+
+<section>
+    <h5>Evidence</h5>
+    <p>One notable piece of evidence is the presence of ancient Chinese maps, such as the Kangnido and Zheng He's maps, which depict lands far beyond China's borders, including regions that could correspond to parts of Australia.</p>
+    <p>Additionally, archaeological findings, such as Chinese artifacts discovered along the northern coast of Australia, fuel speculation about possible contact between Chinese voyagers and Indigenous Australian populations.</p>
+    <p>Historical records and accounts, such as those from Chinese voyages led by Zheng He in the early 15th century, offer further insights into the potential for Chinese maritime expeditions to have reached distant shores, including parts of Australia.</p>
+</section>
+
+<section>
+    <h5>Conclusion</h5>
+    <p>Overall, while conclusive evidence of ancient Chinese exploration of Australia remains elusive, various theories, artifacts, maps, and historical accounts suggest the intriguing possibility of early cross-cultural encounters between Chinese sailors and Indigenous Australians.</p>
+    <p>Further archaeological research, interdisciplinary studies, and exploration of historical sources may shed more light on this fascinating topic.</p>
+</section>
+"""
+```
+
+America vs. Australia as a "Penal Colony".
+```{python}
+america_vs_australia_html = """
+<h4>Sydney - America vs. Australia as a "Penal Colony"</h4>
+
+<section>
+    <h5>Introduction</h5>
+    <p>The common explanation for the usage of Australia as a penal colony is that the American Revolution made the usage of America as one no longer tenable.</p>
+</section>
+
+<section>
+    <h5>Background</h5>
+    <p>Before the American Revolution, Britain sent many convicts to the American colonies, often as indentured servants. These indentured servants were sold to work for a specified number of years.</p>
+    <p>After the American colonies gained independence, Britain had to find an alternative location for its convicts, leading to the establishment of Australia as a penal colony.</p>
+</section>
+
+<section>
+    <h5>Differences in Methods</h5>
+    <p>The American model involved selling convicts as indentured servants who were eventually integrated into the population. In contrast, the Australian model involved the establishment of penal colonies where convicts were isolated and worked on public projects or in designated settlements.</p>
+</section>
+
+<section>
+    <h5>Development of the Australian Model</h5>
+    <p>The Australian convict transportation model involved strict supervision, infrastructure establishment, and the gradual transition of convicts into free settlers once their sentences were served. This system significantly influenced the development of Australian society.</p>
+</section>
+"""
+```
+
+Did Any Other Countries Attempt to Breed Out a Race Like in Australia ?
+```{python}
+breeding_out_popout_html = """
+<h4>Canberra - Did Any Other Countries Attempt to Breed Out a Race Like in Australia?</h4>
+
+<section>
+    <p>In Australia's history, the policy of "breeding out the colour" involved pairing Aboriginal women with white men. This practice was part of a broader effort to assimilate Aboriginal people and erase their cultural and racial identity. The policy was driven by several beliefs:</p>
+</section>
+
+<section>
+    <h5>Beliefs Behind the Policy</h5>
+    <ul>
+        <li>Aboriginals were a dying race: Europeans believed that Aboriginal people would eventually die out and saw interbreeding as a way to manage this perceived inevitability.</li>
+        <li>Australia was a 'white man's' country: The policy was part of a broader effort to maintain Australia as a predominantly white nation.</li>
+        <li>Erasing the black colour: By encouraging mixed-race marriages and subsequent generations, the aim was to gradually eliminate the physical characteristics associated with Aboriginal people.</li>
+    </ul>
+    <p>This policy was implemented during the era known as the Stolen Generation, roughly from 1909 to 1969. Many Aboriginal children were forcibly removed from their families and placed in institutions or with white families to be assimilated into white society.</p>
+</section>
+
+<section>
+    <h5>Comparison with Other Countries</h5>
+    <p>The concept of "breeding out" a race has been seen in other contexts as well, though the specifics and motivations may differ:</p>
+    <ul>
+        <li><strong>United States:</strong> Various assimilation policies aimed at Native American populations, including forced removals and boarding schools.</li>
+        <li><strong>Canada:</strong> Similar to the US, with residential schools and policies to assimilate Indigenous populations.</li>
+        <li><strong>Nazi Germany:</strong> Eugenics policies aimed at creating a pure Aryan race through selective breeding and elimination of those considered racially inferior.</li>
+    </ul>
+    <p>These policies reflect broader trends in transnational history where colonial and imperial powers implemented strategies to assimilate or eliminate indigenous populations.</p>
+</section>
+"""
+```
+
+Fruits and Vegetables Introduced by Chinese Migrants During the Australian Gold Rush.
+```{python}
+chinese_migrants_popout_html = """
+<h4>Ballarat - Fruits and Vegetables Introduced by Chinese Migrants During the Australian Gold Rush</h4>
+
+<section>
+    <p>During the Australian gold rush of the mid-19th century, many Chinese migrants came to Australia, reaching a population of around 40,000 by the 1860s. These migrants brought with them various vegetable seeds and horticultural knowledge, significantly impacting Australia's agricultural landscape.</p>
+</section>
+
+<section>
+    <h5>Vegetables Introduced</h5>
+    <ul>
+        <li>Bok Choy: A type of Chinese cabbage that became popular in Australian cuisine.</li>
+        <li>Chinese Cabbage: Different from Western cabbages, these varieties added diversity to the available produce.</li>
+        <li>Snow Peas: Known for their sweet taste and crunchy texture, snow peas became a staple in Australian markets.</li>
+        <li>Chinese Broccoli (Gai Lan): This leafy green vegetable added to the variety of greens available in Australia.</li>
+        <li>Garlic Chives: With their distinct flavor, these chives were used in various dishes.</li>
+    </ul>
+</section>
+
+<section>
+    <h5>Fruits Introduced</h5>
+    <ul>
+        <li>Chinese Gooseberries (Kiwifruit): Although more associated with New Zealand, the kiwifruit was introduced by Chinese migrants.</li>
+        <li>Persimmons: Known for their sweet and unique taste, persimmons were another contribution.</li>
+    </ul>
+</section>
+
+<section>
+    <h5>Commercial Growth and Success</h5>
+    <p>Many of these fruits and vegetables were successfully grown commercially by Chinese farmers. They dominated the fruit and vegetable markets by the late 19th century, even though the produce was not necessarily of Chinese origin.</p>
+    <p>The Chinese growers were particularly successful in urban markets and mining towns where the demand for fresh produce was high. However, in cities and towns with lower concentrations of Chinese people, the acceptance of these new vegetables varied. Over time, many of these products became integrated into the broader Australian diet.</p>
+</section>
+
+<section>
+    <h5>Impact on Agriculture</h5>
+    <p>The Chinese migrants introduced innovative farming techniques and crop diversity, which enriched Australian agriculture. These introductions facilitated cultural exchange and dietary diversification in Australia, influencing Australian cuisine for generations.</p>
+</section>
+"""
+```
+
+```{python}
+# Create a map centered at Canberra
+m = folium.Map(location=[-35.3075, 149.1244], zoom_start=10)
+
+# Create a MarkerCluster to prevent overlapping markers
+marker_cluster = MarkerCluster().add_to(m)
+
+
+#  Westminster, London and Torrens Strait Islands 
+folium.Marker(
+    location=[51.5007, -0.1246],
+    popup=folium.Popup(westminster_popup_html, max_width=300, max_height=200), # Enable scrolling
+    icon=folium.Icon(color="green")
+).add_to(m)
+
+# Torrens Strait
+folium.Marker(
+    location=[-10.0, 142.0],
+    popup=folium.Popup(torrens_strait_popup_html, max_width=300, max_height=200),  
+    icon=folium.Icon(color="blue")  
+).add_to(marker_cluster)
+
+# Canberra 
+folium.Marker(
+    location=[-35.3075, 149.1244],
+    popup=folium.Popup(canberra_popup_html, max_width=300, max_height=200), 
+     icon=folium.Icon(color="purple")
+).add_to(marker_cluster)
+
+# Guadalcanal
+folium.Marker(
+    location=[-9.1944, 159.9521],
+    popup=folium.Popup(japan_popup_html, max_width=300, max_height=200), 
+     icon=folium.Icon(color="blue")
+).add_to(m)
+
+# Add a marker for Uluru with the popup containing the information
+folium.Marker(
+    location=[-25.3444, 131.0369],
+    popup=folium.Popup(uluru_popup_html, max_width=300, max_height=200), 
+    icon=folium.Icon(color="orange")
+).add_to(m)
+
+# Torres Strait Islands and Austronesian/Polynesian Colonization 
+folium.Marker(
+    location=[-10.0, 142.0],
+    popup=folium.Popup(polynesian_popup_html, max_width=300, max_height=200), 
+    icon=folium.Icon(color="red")  
+).add_to(marker_cluster)
+
+# Sydney
+folium.Marker(
+    location=[-33.8688, 151.2093],
+    popup=folium.Popup(sydney_popup_html, max_width=300, max_height=200),
+    icon = folium.Icon(color = "green")
+).add_to(marker_cluster)
+
+folium.Marker(
+    location=[-33.8688, 151.2093],
+    popup=folium.Popup(america_vs_australia_html, max_width=600, max_height=400),
+    icon=folium.Icon(color="blue")
+).add_to(marker_cluster)
+
+# Canberra 
+folium.Marker(
+    location=[-35.3075, 149.1244],
+    popup=folium.Popup(breeding_out_popout_html, max_width=600, max_height=400),
+    icon=folium.Icon(color="red")
+).add_to(marker_cluster)
+
+# r Ballarat 
+folium.Marker(
+    location=[-37.5622, 143.8503],
+    popup=folium.Popup(chinese_migrants_popout_html, max_width=600, max_height=400),
+    icon=folium.Icon(color='red')
+).add_to(m)
+# Display the map
+m.save("map.html")
+```
+
+#### Click here to view the map [view map](map.html)
+
+##### From the information gathered from our map and the posts, it is evident that the most viewed posts primarily focus on Aboriginal people, Chinese immigrants, issues related to World War I and II, and matters of independence. 
+
+##### These topics highlight key aspects of Australia's complex history, such as the rich cultural heritage and the challenges faced by Aboriginal communities, the significant contributions and experiences of Chinese immigrants during pivotal periods like the gold rush, the profound impact of global conflicts on Australia’s national identity and development, and the country’s journey towards legislative and political independence.
+
+##### Now in the next step, we will examine the number of URLs mentioned in each post and its associated comments. Our goal is to determine which domain is referenced the most frequently and to compare its occurrence rate with that of other URLs.
+```{python}
+# Function to extract and count domain URLs in a text
+def extract_and_count_urls(text):
+    url_pattern = re.compile(r'https?://([^/ ]+)')
+    urls = re.findall(url_pattern, text)
+    url_counts = {}
+    for url in urls:
+        if url in url_counts:
+            url_counts[url] += 1
+        else:
+            url_counts[url] = 1
+    return url_counts
+
+# Return True if dictionary is not empty, False otherwise
+def filter_empty_dicts(d):
+    return bool(d)  
+```
+
+```{python}
+# Create a Url dataframe that just has the body and the title of the post
+url_df = post_df[["Body","Title"]]
+```
+```{python}
+print(url_df.head())
+```
+```{python}
+# Again we will remove tags and clean the text 
+url_df["Clean Body"] = url_df["Body"].apply(remove_html_tags)
+print(url_df.head())
+```
+```{python}
+# Apply the function to the cleanned body column and create a new column represents the urls counts
+url_df["Url Counts Body"] = url_df["Clean Body"].apply(extract_and_count_urls)
+print(url_df)
+```
+```{python}
+# Convert the 'url_counts' column to a DataFrame with separate rows for each URL and its count
+url_counts_body = pd.DataFrame(url_df["Url Counts Body"].tolist(), index=url_df.index).stack().reset_index()
+url_counts_body.columns = ["index", "domain", "count_body"]
+url_counts_body = url_counts_body.drop(columns = ["index"])
+
+print(url_counts_body)
+```
+Currently, we have the count of URLs within the body of each post, but this count is limited to individual posts. Since a URL can be referenced multiple times across different posts, we need to calculate the total number of times each URL appears in the entire dataset.
+
+```{python}
+url_counts_body = url_counts_body.groupby("domain").size().to_frame()
+print(url_counts_body)
+```
+
+```{python}
+# Rename the column
+url_counts_body.rename(columns={0: "Times appear"}, inplace=True)
+
+# Sort the times appear to find the most referenced URL
+url_counts_body.sort_values(by="Times appear", ascending=False, inplace=True)
+url_counts_body = url_counts_body.reset_index()
+print(url_counts_body)
+```
+
+Interestingly, Wikipedia is the most frequently referenced page, with its number of references far surpassing other domains. This suggests that users most commonly rely on Wikipedia to gather information and details for the content of their posts.
+
+The next step is to examine the headers of the posts to check for any URLs included in each one.
+
+```{python}
+# Apply the function to the Title column and create a new column represents the urls counts of that title
+url_df["Url Counts Title"] = url_df["Title"].apply(extract_and_count_urls)
+print(url_df.head())
+```
+```{python}
+# Convert the 'url_counts' column to a DataFrame with separate rows for each URL and its count
+url_counts_title = pd.DataFrame(url_df["Url Counts Title"].tolist(), index=url_df.index).stack().reset_index()
+url_counts_title.columns = ["index", "domain", "count_title"]
+url_counts_title = url_counts_title.drop(columns = ["index"])
+
+print(url_counts_title)
+```
+
+Now we can see that it is evident that there are no URLs referenced in the headers of any posts.
+Let's determine if there are any URLs referenced in the comments of a specific post.
+```{python}
+# Create a new dataframe for the cmt
+url_cmt = cmt_df[["Text"]]
+print(url_cmt.head())
+```
+```{python}
+# Apply the function to the Text column and create a new column represents the urls counts of that text comments
+url_cmt["Url Counts Cmt"] = url_cmt["Text"].apply(extract_and_count_urls)
+print(url_cmt.head())
+```
+
+Since the Comments dataframe is significantly larger than the post dataframe, we can't simply count the number of URLs appearing in each comment as we did with the post dataframe. Instead, we need to filter out rows with empty dictionaries (as these dictionaries represent the number of appearances of specific URLs in that comment) to reduce the size of the dataframe.
+```{python}
+# Apply the function to filter out the rows that have empty dictionary in  the DataFrame
+url_cmt = url_cmt[url_cmt["Url Counts Cmt"].apply(filter_empty_dicts)]
+
+url_cmt = url_cmt.reset_index(drop = True)
+print(url_cmt)
+```
+
+```{python}
+url_list_cmt = url_cmt["Url Counts Cmt"].tolist()
+url_counts = {}
+
+# Aggregate counts from list of dictionaries
+for url_dict in url_list_cmt:
+    for url, count in url_dict.items():
+        if url in url_counts:
+            url_counts[url] += count
+        else:
+            url_counts[url] = count
+
+# Create DataFrame from dictionary
+url_counts_cmt= pd.DataFrame(list(url_counts.items()), columns=["domain", "Time Appears Cmt"])
+
+print(url_counts_cmt)
+```
+
+```{python}
+# Sort out to find out which urls referenced the most in the comments
+url_counts_cmt = url_counts_cmt.sort_values(by = "Time Appears Cmt",ascending = False).reset_index(drop = True)
+print(url_counts_cmt)
+```
+
+Let's revisit the DataFrames we created to represent the occurrence of URLs referenced in the titles, bodies, and comments of the posts.
+```{python}
+print("Occurences of the Urls in Tiles:")
+print(url_counts_title)
+
+print("Occurences of the Urls in Body:")
+print(url_counts_body)
+
+print("Occurences of the Urls in the Comments:")
+print(url_counts_cmt)
+```
+
+Now, let's combine our dataframes into a single dataframe that represents the frequency of URLs in both the post bodies and their comments. (The post titles will not be included as they do not contain any URLs).
+```{python}
+url_complete = pd.merge(url_counts_body,url_counts_cmt,on = "domain",how = "inner")
+print(url_complete)
+```
+From our combined dataframe, it's evident that some URLs are referenced in the post titles but not in the comments, and vice versa. This observation is notable as it has significantly reduced the number of rows in our merged dataframe.
+An important observation is that the Wikipedia page is the most frequently referenced site, indicating that its content likely provides valuable information and details that users find relevant and worthy of citation.
+
+```{python}
+# Sum up the rows column-wise excluding the first row
+sum_values = np.sum(url_complete.iloc[1:], axis=0)
+print(sum_values)
+```
+```{python}
+# Sum up the rows column-wise excluding the first row
+sum_values = np.sum(url_complete.iloc[1:], axis = 0 )
+
+# The first row which is the wikipedia page
+first_row = url_complete.iloc[0].to_frame().T
+
+# Create a DataFrame with the summed values and 'Total' as the domain
+total_row = pd.DataFrame({"domain": ["Other domains"], "Times appear": [sum_values["Times appear"]], "Time Appears Cmt": [sum_values["Time Appears Cmt"]]})
+
+# Concatenate the original DataFrame and the DataFrame with the total row
+url_complete_with_total = pd.concat([first_row, total_row])
+
+
+url_complete_with_total = url_complete_with_total.reset_index(drop = True)
+
+print(url_complete_with_total)
+```
+```{python}
+# Melt the DataFrame to make it suitable for plotting
+df_melted = url_complete_with_total.melt(id_vars="domain", var_name="Metric", value_name="Value")
+
+# Plot
+plt.figure(figsize=(10, 6))
+axes = sns.barplot(data=df_melted, x="domain", y="Value", hue="Metric")
+
+# Add annotations
+for p in axes.patches:
+    axes.annotate(format(p.get_height(), ".1f"), 
+                (p.get_x() + p.get_width() / 2., p.get_height()), 
+                ha = "center", va = "center", 
+                xytext = (0, 9), 
+                textcoords = "offset points")
+
+plt.title("Comparison of between Wikipedia with other domains")
+plt.xlabel("Domain")
+plt.ylabel("Count")
+plt.legend(title="Metric")
+plt.show()
+```
+##### The bar plot unmistakably illustrates that URLs are more commonly present in comments than in the main posts. This trend is logical since individuals frequently incorporate references in their comments to reinforce their ideas and perspectives. It underscores the interactive and collaborative nature of discussions within online communities, where participants strive to enrich their contributions by providing external sources for credibility and further exploration.
+
+##### More interestingly , the fact that Wikipedia is mentioned much more frequently in comments compared to all other websites combined suggests that people find it extremely useful. They rely on it for detailed and trustworthy information on a wide range of topics. When they include Wikipedia links in their comments, it's a way of showing that they've done their research and want to back up what they're saying with solid evidence.
+
+##### In essence, the high frequency of Wikipedia mentions in comments reflects its central role as a source of knowledge and a catalyst for online interaction.
+
+##### Next, we'll focus on analyzing how the sentiments expressed in the titles and bodies relate to the sentiments of the associated comments, as well as how the length of the content in both titles and bodies influences these sentiments.
+
+##### Let's determine which topic receives the most mentions in our Stack Exchange data.
+
+
+```{python}
+tag_df.sort_values(by = "Count",ascending = False)
+```
+
+It appears that World War II is the most frequently discussed topic in our dataset. Now, let's delve into its analysis.
+```{python}
+# Initialize a pre-trained sentiment analysis model called "cardiffnlp/twitter-roberta-base-sentiment" 
+# using the Hugging Face Transformers library
+MODEL = f"cardiffnlp/twitter-roberta-base-sentiment"
+tokenizer = AutoTokenizer.from_pretrained(MODEL)
+model = AutoModelForSequenceClassification.from_pretrained(MODEL)
+```
+```{python}
+# Function to get the sentiment score
+def polarity_scores_roberta(text):
+    if isinstance(text, str):
+        encoded_text = tokenizer(text, return_tensors='pt',max_length = 512)
+        output = model(**encoded_text)
+        scores = output[0][0].detach().numpy()
+        scores = softmax(scores)
+        
+        # Calculate the compound score of the sentiment score
+        # Basically the -1 represent the extreme negative , 0 : neutral , 1 is extreme postive
+        return (scores[0] * -1) + (scores[1] * 0) + (scores[2] * 1 )
+        
+    # If the text is nan return it as neutral 
+    else: 
+        return 0
+
+# Function to remove special keywords
+def remove_special_keywords(text):
+    cleaned_text = re.sub(r'[!@#$%^&*]', '', text)
+    return cleaned_text
+```
+```{python}
+# Test the function
+negative_text = "Hi I really really hate you"
+print("Negative score: ",polarity_scores_roberta(negative_text))
+print("=" * 20)
+      
+neutral_text = "Hi"
+print("Neutral score: ",polarity_scores_roberta(neutral_text))
+print("="* 20)
+
+positive_text = "Hi I incredibly like you a lot"
+print("Positive score: ",polarity_scores_roberta(positive_text))
+```
+```{python}
+# Create a new dataframe represents represent the posts that related to WW2
+ww2_df_post = post_df[post_df["Tags"].str.contains(r'\bworld-war-two\b')].reset_index(drop = True)
+print(ww2_df_post)
+```
+```{python}
+# Again remove html tags for the Body
+ww2_df_post["Clean_Body"] =ww2_df_post["Body"].apply(remove_html_tags)
+print(ww2_df_post)
+```
+```{python}
+# Remove special keywords for the Cleanned Body and the Title
+ww2_df_post["Clean_Body"] = ww2_df_post["Clean_Body"].apply(remove_special_keywords)
+ww2_df_post["Title"] =  ww2_df_post["Title"].apply(remove_special_keywords)
+print(ww2_df_post.head())
+```
+```{python}
+# Narrow down our dataframe to make it contains the Title the body and the PostTypeId
+ww2_df_post = ww2_df_post[["Id","Clean_Body","Title"]]
+print(ww2_df_post)
+```
+```{python}
+# Let's have a look at the newly cleanned dataframe to check if there are 
+#any null values in our title and body
+print(ww2_df_post.info())
+```
+
+Let's determine the polarity score for the titles and their corresponding bodies.
+```{python}
+# Body Score
+ww2_df_post["Body Score"] = ww2_df_post["Clean_Body"].apply(polarity_scores_roberta)
+print(ww2_df_post.head())
+```
+```{python}
+# Calculate the polarity score of the title
+ww2_df_post["Title Score"] = ww2_df_post["Title"].apply(polarity_scores_roberta)
+print(ww2_df_post.head())
+```
+
+Once we've computed the polarity scores for the titles and bodies, our next step involves generating columns that depict the length of the text in both titles and their respective bodies.
+```{python}
+# Titles
+ww2_df_post["Length Title"] = ww2_df_post["Title"].apply(lambda text : len(text))
+
+# Bodies 
+ww2_df_post["Length Body"] = ww2_df_post["Clean_Body"].apply(lambda text: len(text))
+print(ww2_df_post)
+```
+
+##### Next, we'll generate word clouds to identify the most commonly appeared words in the bodies of posts categorized under different sentiments: negative, neutral, and positive.
+
+Initially, we'll create a new dataframe that includes bodies along with their polarity scores. Then, we'll classify the sentiments of these bodies based on their polarity scores.
+```{python}
+# Extract appropriate columns
+word_cloud_df = ww2_df_post[["Clean_Body","Body Score"]]
+print(word_cloud_df)
+```
+```{python}
+# Funtion to return the sentiment of the text based on its sentiment score
+def classify_sentiment(score):
+    if score < -0.2:
+        return "Negative"
+    elif score > 0.2:
+        return "Positive"
+    else:
+        return "Neutral"
+```
+```{python}
+word_cloud_df["Sentiment"] = word_cloud_df["Body Score"].apply(classify_sentiment)
+print(word_cloud_df)
+```
+```{python}
+# Function to generate word cloud
+def generate_word_cloud(text, title):
+    wordcloud = WordCloud(width=600, height=300, background_color="white", prefer_horizontal=0.9).generate(text)
+    plt.figure(figsize=(10, 5))
+    plt.imshow(wordcloud, interpolation='bilinear')
+    plt.title(title)
+    plt.axis('off')
+    plt.show()
+```
+```{python}
+# Generate word clouds for each sentiment group
+# Positive group
+positive_posts_text = " ".join(word_cloud_df[word_cloud_df["Sentiment"] == "Positive"]["Clean_Body"])
+generate_word_cloud(positive_posts_text, "Positive Sentiment Word Cloud")
+
+# Neutral group
+neutral_posts_text = " ".join(word_cloud_df[word_cloud_df["Sentiment"] == "Neutral"]["Clean_Body"])
+generate_word_cloud(neutral_posts_text, "Neutral Sentiment Word Cloud")
+
+# Negative group
+negative_posts_text = " ".join(word_cloud_df[word_cloud_df["Sentiment"] == "Negative"]["Clean_Body"])
+generate_word_cloud(negative_posts_text, "Negative Sentiment Word Cloud")
+```
+
+##### From the word clouds, we observe that the size of words corresponds to their frequency in the text. Larger words indicate higher occurrence. In the positive sentiment group, prominent words like "Thank" and "Hope" signify positive emotions. These words, expressing gratitude and optimism, are more prevalent in texts with positive sentiments. Thus, analyzing these word clouds offers insights into the prevailing positive themes and emotions conveyed in the text.
+
+##### In the neutral sentiment word cloud, we notice that country names and general terms like "World War" are more prominent. This makes sense, as these words convey general information without expressing specific emotions.
+
+##### Interestingly, in the negative sentiment word cloud, words like "War" are prominent, reflecting themes of fatality and death, which clearly indicate negative emotions. Additionally, country names such as Germany and Japan, along with nationalities like German and Japanese, are frequently mentioned. This is likely because these countries were associated with the Nazis, thus evoking negative sentiments.
+
+Next, we'll analyze the comments by calculating their sentiment scores.
+```{python}
+# Get the Ids of the posts related to World War 2
+ww2_post_ids = ww2_df_post["Id"]
+
+# Filter out comments related to World War 2 posts
+ww2_cmt_df = cmt_df[cmt_df["PostId"].isin(ww2_post_ids)].reset_index(drop = True)
+print(ww2_cmt_df)
+```
+```{python}
+# Filter out special keywords in the comments text
+ww2_cmt_df = ww2_cmt_df[["PostId","Text"]]
+ww2_cmt_df["Text"] = ww2_cmt_df["Text"].apply(remove_special_keywords)
+print(ww2_cmt_df)
+```
+```{python}
+# Calculate the polarity score of the filtered comments
+ww2_cmt_df["Comment Score"] = ww2_cmt_df["Text"].apply(polarity_scores_roberta)
+print(ww2_cmt_df.head())
+```
+```{python}
+# Calcualte the Average polarity score for each post
+# Since one post can have many comments so we need to calculate the mean values
+avg_ww2_cmt = ww2_cmt_df.groupby("PostId")[["Comment Score"]].mean().reset_index()
+print(avg_ww2_cmt)
+```
+
+Let's have a look again about the two dataframes we've created—one for posts and one for comments.
+```{python}
+print("Dataframe represents the Post Sentiment:")
+print(ww2_df_post)
+
+print("Dataframe represent the Comment Sentiment:")
+print(avg_ww2_cmt)
+```
+
+Next, let's combine the two dataframes by merging them on the PostId column.
+```{python}
+# First we need to rename our post dataframe to make it the same name Id to be
+# able to merge the 2 dataframes
+ww2_df_post.rename(columns = {"Id":"PostId"},inplace = True)
+print(ww2_df_post)
+```
+```{python}
+complete_sentiment_df = pd.merge(ww2_df_post, avg_ww2_cmt , on = "PostId", how = "left" )
+print(complete_sentiment_df)
+```
+```{python}
+# Check the general information of the merged dataframe as well as checking null values
+print("General Information:")
+print(complete_sentiment_df.describe())
+
+print("Checking Null Values:")
+print(complete_sentiment_df.info())
+```
+
+First, we notice that the Comment Score column contains some null values. Instead of simply deleting these rows, we'll use a random sampling technique to replace the null values.
+
+But we will firstly check the performance of it compared to other imputation techniques such as the mean and median imputation.
+```{python}
+# Mean values
+mean_value = complete_sentiment_df["Comment Score"].mean()
+mean_impt = complete_sentiment_df["Comment Score"].fillna(mean_value)
+
+# Median value 
+median = complete_sentiment_df["Comment Score"].median()
+median_impt = complete_sentiment_df["Comment Score"].fillna(median)
+
+
+# Random sample imputation
+def random_sample_imputation(df):
+    cols_with_missing_values = df.columns[df.isna().any()].tolist()
+
+    for var in cols_with_missing_values:
+        # extract a random sample
+        random_sample_df = df[var].dropna().sample(df[var].isnull().sum(), replace=True, random_state=0)
+        # re-index the randomly extracted sample
+        random_sample_df.index = df[df[var].isnull()].index
+        # replace the NA
+        df.loc[df[var].isnull(), var] = random_sample_df.values
+
+    return df
+
+random_impt = random_sample_imputation(complete_sentiment_df[["Comment Score"]])
+```
+```{python}
+# Plotting part
+
+# Original data
+original_data = complete_sentiment_df["Comment Score"]
+
+# Plotting the distributions
+plt.figure(figsize=(12, 6))
+
+# Original data
+sns.kdeplot(original_data, label="Original", color="blue", alpha=0.3)
+
+# Mean imputed data
+sns.kdeplot(mean_impt, label="Mean Imputed", color="green",  alpha=0.3)
+
+# Median imputed data
+sns.kdeplot(median_impt, label="Median Imputed", color="red",alpha=0.3)
+
+# Random sample imputed data
+sns.kdeplot(random_impt, label="Random Sample Imputed", color="purple",alpha=0.3)
+
+plt.title("Comparison of Imputation Techniques")
+plt.xlabel("Comment Score")
+plt.ylabel("Density")
+plt.legend()
+plt.show()
+```
+
+Based on the distribution of the data generated by different imputation techniques, we observe that the random sample imputation technique preserves the original data's distribution most accurately.
+```{python}
+# Filling NA values
+complete_sentiment_df["Comment Score"] = random_sample_imputation(complete_sentiment_df[["Comment Score"]])
+```
+```{python}
+# Check the Null values again 
+print(complete_sentiment_df.info())
+```
+
+Another important point is that some columns, like the length of the body and titles, have a wide range of values. Therefore, we need to standardize our dataframe to ensure the values are on a similar scale.
+```{python}
+# Simply remove our unnecessary columns 
+complete_sentiment_df.drop(columns = ["PostId","Clean_Body","Title"],inplace = True)
+print(complete_sentiment_df)
+```
+```{python}
+# Initialize the StandardScaler
+scaler = StandardScaler()
+
+# Apply the scaler to the selected columns
+std_df = scaler.fit_transform(complete_sentiment_df)
+std_df = pd.DataFrame(std_df,columns = complete_sentiment_df.columns)
+print(std_df)
+```
+
+Let's examine the relationships between variables as well as the distribution of them by utilizing the pairplot function.
+```{python}
+sns.pairplot(std_df)
+```
+
+Now ,let's explore the relationship between variables by calculating the coefficient correlation.
+```{python}
+sns.heatmap(std_df.corr(),annot = True)
+```
+
+Upon initial observation, it appears that there is a correlation between the sentiment score of the title and its associated body. However, there doesn't seem to be any noticeable correlation between the other variables in the dataset.
+
+To strengthen our assertion, We'll construct a basic linear regression model to assess the relationship between variables. Given that posts are typically created before comments are made, we'll designate all attributes of the post as predictors, with the sentiment score of the comments serving as our target variable.
+```{python}
+X = std_df.drop(columns = ["Comment Score"]) # predictor variables
+y = std_df[["Comment Score"]]  # target variable
+
+
+X = sm.add_constant(X)
+
+# Create a linear regression model
+model = sm.OLS(y, X)
+
+# Fit the model to the data
+results = model.fit()
+
+# print the summary of the model
+print(results.summary())
+```
+
+From the summary of our linear regression model, we can deduce that the sentiment score of the body, the sentiment score of the title, and the length of the body of each post have a statistically significant impact on our target variable, which is the sentiment score of the comments for that post. However, it appears that the length of the header of each post does not have a statistically significant effect on our target variable ( the p-value is much larger than 5%).
+
+We'll create a residuals plot to assess the assumptions of our linear regression model.
+```{python}
+# Residuals Plot
+
+residuals = results.resid
+
+# Step 2: Plot the residuals against the predicted values
+sns.residplot(x=results.fittedvalues, y=residuals, lowess=True, line_kws={'color': 'red'})
+plt.xlabel('Fitted values')
+plt.ylabel('Residuals')
+plt.title('Residuals Plot')
+plt.show()
+```
+```{python}
+# QQ plot
+qqplot(residuals, line='s')
+plt.title('QQ Plot')
+plt.show()
+```
+
+ As observed in our residual plot, most data points are concentrated in the center, and the curved lowess line suggests a potential non-linear relationship between our predictors and the response variable that our linear model is not capturing.
+ 
+Regarding the QQ plot, we notice that while the data points initially align with the linear line, they increasingly diverge as they progress. This indicates that the residuals do not follow a normal distribution.
+
+##### From our OLS summary, we see that the R-squared value is relatively low at just 5.2%, indicating low accuracy. This suggests that while the sentiment scores of the title and body, along with their associated lengths, do have some relationship with the response variable, they are not strong enough to be considered robust predictors.
+
+##### Interestingly, the more sentiments expressed in the titles, the more sentiments will be reflected in the bodies of the posts.
+
+#### Regular expressions represent a cornerstone in text data processing, offering versatile capabilities for extracting and manipulating information from raw text. With regular expressions, we can delve into the intricacies of unstructured data, pinpointing specific patterns or phrases that hold significance within a vast sea of text. For instance, in our case , in sentiment analysis, where understanding the emotional tone of text is paramount, regular expressions enable us to identify sentiment-bearing words or expressions, thus laying the groundwork for insightful analysis. Moreover, in tasks like named entity recognition or information extraction, regular expressions serve as invaluable tools for identifying and extracting entities such as locations, names, dates, or numerical data, contributing to the creation of structured datasets from unstructured text sources.
+
+#### Furthermore, regular expressions play a crucial role in data preprocessing, particularly in the realm of natural language processing (NLP). By employing regular expressions, we can effectively clean text data by removing noise such as stop words, punctuation, or special characters that might obscure the underlying signal. This data cleaning process is essential for enhancing the quality and reliability of subsequent analyses, ensuring that our models are trained on clean, relevant data. Additionally, regular expressions facilitate the standardization of text data by enforcing consistent formatting conventions, thereby streamlining downstream tasks such as text classification, clustering, or information retrieval. In essence, the power of regular expressions lies not only in their ability to extract valuable insights from text but also in their capacity to transform raw text into structured, actionable data that fuels advanced analytics and decision-making processes.
+
+#### In summary, while regular expressions provide powerful tools for analyzing text data, their use raises important considerations regarding data privacy and ethics. These concerns include the inadvertent disclosure of sensitive information during sentiment analysis or named entity recognition, the potential bias introduced by indiscriminate data cleaning, the homogenization of diverse voices through standardization, and the risk of reidentification from structured datasets. To address these issues, practitioners must prioritize ethical principles such as data minimization, anonymization, and transparency to ensure responsible and ethical data analysis practices.
+
+
